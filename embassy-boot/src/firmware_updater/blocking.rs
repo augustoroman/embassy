@@ -139,7 +139,11 @@ impl<'d, DFU: NorFlash, STATE: NorFlash> BlockingFirmwareUpdater<'d, DFU, STATE>
             let signature = Signature::from_bytes(_signature);
 
             let mut message = [0; 64];
-            let mut chunk_buf = [0; 2];
+            // scoring-box fork: 256-byte read buffer, not upstream's 2 bytes. The
+            // upstream default does one flash read per 2 bytes, i.e. ~hundreds of
+            // thousands of reads over an ~850 KiB image — unusably slow over the
+            // RP2040's XIP. 256 bytes is a small stack cost for ~128x fewer reads.
+            let mut chunk_buf = [0; 256];
             self.hash::<Sha512>(_update_len, &mut chunk_buf, &mut message)?;
 
             public_key.verify(&message, &signature).map_err(into_signature_error)?;
@@ -159,7 +163,10 @@ impl<'d, DFU: NorFlash, STATE: NorFlash> BlockingFirmwareUpdater<'d, DFU, STATE>
             let signature = Signature::try_from(_signature).map_err(into_signature_error)?;
 
             let mut message = [0; 64];
-            let mut chunk_buf = [0; 2];
+            // scoring-box fork: 256-byte read buffer, not upstream's 2 bytes — see
+            // the ed25519-dalek branch above for the rationale (avoids ~hundreds
+            // of thousands of tiny flash reads over an ~850 KiB image).
+            let mut chunk_buf = [0; 256];
             self.hash::<Sha512>(_update_len, &mut chunk_buf, &mut message)?;
 
             let r = public_key.verify(&message, &signature);
