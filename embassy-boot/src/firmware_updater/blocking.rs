@@ -207,8 +207,16 @@ impl<'d, DFU: NorFlash, STATE: NorFlash> BlockingFirmwareUpdater<'d, DFU, STATE>
         Ok(())
     }
 
-    /// Mark to trigger firmware swap on next boot.
-    #[cfg(not(feature = "_verify"))]
+    /// Mark to trigger firmware swap on next boot, WITHOUT verifying a signature.
+    ///
+    /// Upstream gates this out under `_verify` to force every commit through
+    /// [`Self::verify_and_mark_updated`]. The scoring-box fork keeps it available
+    /// even with `_verify` on, because the firmware-revert path
+    /// (`boxhwlib::dfu::DfuHandle::mark_for_revert`) re-marks the *already
+    /// installed and previously verified* image still sitting in DFU: it is a
+    /// forward swap of a known-good image, not the ingestion of new bytes, so it
+    /// must not require (and has no) signature. New-image installs still go
+    /// exclusively through `verify_and_mark_updated`.
     pub fn mark_updated(&mut self) -> Result<(), FirmwareUpdaterError> {
         self.state.mark_updated()
     }

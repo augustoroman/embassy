@@ -52,6 +52,12 @@ log = [
     "embassy-boot/log",
     "embassy-rp/log",
 ]
+## Verify DFU signatures with `salty` (Cortex-M-oriented Ed25519). Passthrough
+## to embassy-boot so a downstream crate can enable signed updates via this
+## bootloader lib without depending on embassy-boot directly.
+ed25519-salty = ["embassy-boot/ed25519-salty"]
+## Verify DFU signatures with `ed25519-dalek` instead (larger footprint).
+ed25519-dalek = ["embassy-boot/ed25519-dalek"]
 
 [profile.dev]
 debug = 2

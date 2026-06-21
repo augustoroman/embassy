@@ -172,8 +172,12 @@ impl<'d, DFU: NorFlash, STATE: NorFlash> FirmwareUpdater<'d, DFU, STATE> {
         Ok(())
     }
 
-    /// Mark to trigger firmware swap on next boot.
-    #[cfg(not(feature = "_verify"))]
+    /// Mark to trigger firmware swap on next boot, WITHOUT verifying a signature.
+    ///
+    /// scoring-box fork: kept available under `_verify` (upstream gates it out)
+    /// so the firmware-revert path can re-mark an already-verified image. See the
+    /// blocking `mark_updated` for the full rationale. New installs still go
+    /// through `verify_and_mark_updated`.
     pub async fn mark_updated(&mut self) -> Result<(), FirmwareUpdaterError> {
         self.state.mark_updated().await
     }
