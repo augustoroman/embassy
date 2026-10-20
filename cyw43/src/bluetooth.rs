@@ -594,7 +594,14 @@ impl<'d> bt_hci_transport::Transport for BtDriver<'d> {
         async {
             let ch = &mut *self.rx.borrow_mut();
             let buf = ch.receive().await;
-            assert!(buf.len < rx.len());
+            if buf.len >= rx.len() {
+                // Larger than the caller's buffer: either a corrupt length read
+                // off the ring or a host buffer sized below the controller's
+                // limits. Drop the packet and report it rather than panicking.
+                warn!("HCI rx: dropping {} byte packet, buffer is {}", buf.len, rx.len());
+                buf.receive_done();
+                return Err(Error::from(ReadHciError::<Infallible>::BufferTooSmall));
+            }
 
             let mut reader = &buf.buf[..buf.len];
             let result =
