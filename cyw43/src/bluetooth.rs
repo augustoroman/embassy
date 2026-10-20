@@ -224,7 +224,7 @@ impl<'a> BtRunner<'a> {
         self.upload_bluetooth_firmware(bus, firmware, buf).await;
         self.wait_bt_ready(bus).await;
         self.init_bt_buffers(bus).await;
-        self.wait_bt_awake(bus).await;
+        assert!(self.wait_bt_awake(bus).await);
         self.bt_set_host_ready(bus).await;
         self.bt_toggle_intr(bus).await;
     }
@@ -325,14 +325,19 @@ impl<'a> BtRunner<'a> {
         assert!(success == true);
     }
 
-    pub(crate) async fn wait_bt_awake(&mut self, bus: &mut impl Bus) {
+    /// Wait up to 300 ms for the Bluetooth core to acknowledge a host wake.
+    ///
+    /// Returns `false` on timeout instead of panicking: a slow or wedged BT core
+    /// must not take down the whole device, and in particular must not stop the
+    /// shared runner from servicing WLAN.
+    pub(crate) async fn wait_bt_awake(&mut self, bus: &mut impl Bus) -> bool {
         trace!("wait_bt_awake");
         let mut last = 0;
         for _ in 0..300 {
             last = bus.bp_read32(BT_CTRL_REG_ADDR).await;
             trace!("BT_CTRL_REG_ADDR = {:08x}", last);
             if last & BTSDIO_REG_BT_AWAKE_BITMASK != 0 {
-                return;
+                return true;
             }
             Timer::after(Duration::from_millis(1)).await;
         }
@@ -341,7 +346,7 @@ impl<'a> BtRunner<'a> {
             last,
             self.host_ctrl.value()
         );
-        panic!("Bluetooth controller failed to acknowledge host wake");
+        false
     }
 
     pub(crate) async fn bt_set_host_ready(&mut self, bus: &mut impl Bus) {
@@ -381,17 +386,26 @@ impl<'a> BtRunner<'a> {
         bus.bp_write32(self.addr + BTSDIO_OFFSET_BT2HOST_OUT, 0).await;
     }
 
-    async fn bt_bus_request(&mut self, bus: &mut impl Bus) {
+    async fn bt_bus_request(&mut self, bus: &mut impl Bus) -> bool {
         // TODO: CYW43_THREAD_ENTER mutex?
         self.bt_set_awake(bus, true).await;
-        self.wait_bt_awake(bus).await;
+        self.wait_bt_awake(bus).await
     }
 
     pub(crate) async fn hci_write(&mut self, bus: &mut impl Bus, buf: &mut Aligned<A4, [u8]>) {
-        self.bt_bus_request(bus).await;
+        let awake = self.bt_bus_request(bus).await;
 
         // NOTE(unwrap): we only call this when we do have a packet in the queue.
         let msg = self.tx_chan.try_receive().unwrap();
+
+        if !awake {
+            // Drop the packet rather than retrying: a retry would block the
+            // shared runner for another wake timeout on every pass. The host
+            // stack never sees a response and recovers through its own timeouts.
+            warn!("bluetooth core not awake; dropping HCI packet");
+            msg.receive_done();
+            return;
+        }
         debug!("HCI tx: {:02x}", crate::fmt::Bytes(&msg.buf[..msg.len]));
 
         let len = msg.len as u32 - 1; // len doesn't include hci type byte
