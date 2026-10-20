@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- next-header -->
 ## Unreleased - ReleaseDate
 
+- Resynchronize the Bluetooth RX ring on a corrupt record header instead of panicking or stalling.
+- `BtDriver::read` drops packets larger than the caller's buffer instead of panicking.
+- A Bluetooth wake timeout drops the HCI packet instead of panicking.
 - `new_with_bluetooth` now returns `Result`, like `new`: Bluetooth bring-up failures (firmware never ready, core never awake) are reported instead of panicking.
 - Clear the scan event mask and subscription on cancellation.
 - Keep WiFi responsive when the Bluetooth RX queue is full; resume queued records when space frees.
