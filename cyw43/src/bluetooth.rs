@@ -57,6 +57,10 @@ pub(crate) struct BtRunner<'d> {
     b2h_read_pointer: u32,
     host_ctrl: HostCtrl,
     pending_drain: bool,
+    /// `(read, write)` ring pointers the last time a record header claimed more
+    /// bytes than were available. Seeing the same pair again on the next pass
+    /// means the ring is stuck behind a corrupt header, not mid-write.
+    short_record_at: Option<(u32, u32)>,
 }
 
 /// Host-owned BTSDIO control bits.
@@ -144,6 +148,7 @@ pub(crate) fn new<'d>(state: &'d mut BtState) -> (BtRunner<'d>, BtDriver<'d>) {
             b2h_read_pointer: 0,
             host_ctrl: HostCtrl::new(),
             pending_drain: false,
+            short_record_at: None,
         },
         BtDriver {
             rx: RefCell::new(rx_receiver),
@@ -461,6 +466,20 @@ impl<'a> BtRunner<'a> {
         msg.receive_done();
     }
 
+    /// Skip everything currently in the BT-to-host ring, so reading resumes in
+    /// frame at the next record the controller writes. The skipped records are
+    /// lost; the host stack recovers from that through its own timeouts, which
+    /// is far better than reading every later record out of frame.
+    async fn resync_b2h(&mut self, bus: &mut impl Bus, write_pointer: u32) {
+        let skipped = write_pointer.wrapping_sub(self.b2h_read_pointer) % BTSDIO_FWBUF_SIZE;
+        warn!("bluetooth rx: resynchronizing ring, discarding {} bytes", skipped);
+        self.b2h_read_pointer = write_pointer % BTSDIO_FWBUF_SIZE;
+        self.short_record_at = None;
+        bus.bp_write32(self.addr + BTSDIO_OFFSET_BT2HOST_OUT, self.b2h_read_pointer)
+            .await;
+        self.bt_toggle_intr(bus).await;
+    }
+
     async fn bt_has_work(&mut self, bus: &mut impl Bus) -> bool {
         let int_status = bus.bp_read32(CHIP.sdiod_core_base_address + SDIO_INT_STATUS).await;
         if int_status & I_HMB_FC_CHANGE != 0 {
@@ -503,10 +522,32 @@ impl<'a> BtRunner<'a> {
                 // calc length
                 let len = header[0] as u32 | ((header[1]) as u32) << 8 | ((header[2]) as u32) << 16;
                 let rounded_len = round_up(len, 4);
-                if available < 4 + rounded_len {
-                    warn!("ringbuf data not enough for a full packet?");
+                if rounded_len as usize > BT_HCI_MTU - 1 {
+                    // Larger than any rx slot: the header is corrupt. Without a
+                    // resync the slicing below would panic, and every later
+                    // record would be read out of frame.
+                    warn!("bluetooth rx: corrupt record length {}", len);
+                    self.resync_b2h(bus, write_pointer).await;
                     break;
                 }
+                if available < 4 + rounded_len {
+                    let at = (self.b2h_read_pointer, write_pointer);
+                    if self.short_record_at == Some(at) {
+                        // Same short record on two passes with no progress from
+                        // the controller: the header is corrupt.
+                        warn!(
+                            "bluetooth rx: record claims {} bytes, {} available",
+                            4 + rounded_len,
+                            available
+                        );
+                        self.resync_b2h(bus, write_pointer).await;
+                    } else {
+                        warn!("ringbuf data not enough for a full packet?");
+                        self.short_record_at = Some(at);
+                    }
+                    break;
+                }
+                self.short_record_at = None;
                 // Keep the entire record in the ring until the host has queue space.
                 let Some(mut msg) = self.rx_chan.try_send() else {
                     self.pending_drain = true;

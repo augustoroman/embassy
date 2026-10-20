@@ -499,3 +499,78 @@ fn deferred_rx_progresses_while_wifi_transmit_stays_ready() {
         host_receive(&host, 0x10 + index);
     }
 }
+
+/// Bus operations for `handle_irq` noticing BT work and acknowledging it.
+fn bt_work(ops: &mut Vec<Op>) {
+    let interrupt = CHIP.sdiod_core_base_address + SDIO_INT_STATUS;
+    ops.extend([
+        Op::BpRead32(interrupt, I_HMB_FC_CHANGE),
+        Op::BpWrite32(interrupt, I_HMB_FC_CHANGE),
+    ]);
+}
+
+/// Bus operations for reading the first record's header from a full ring.
+fn first_header(ops: &mut Vec<Op>, header: [u8; 4]) {
+    ops.extend([
+        Op::BpRead32(BASE + BTSDIO_OFFSET_BT2HOST_IN, WRITE_POINTER),
+        Op::BpRead(BASE + BTSDIO_OFFSET_HOST_READ_BUF, header.to_vec()),
+    ]);
+}
+
+/// Bus operations for skipping the whole ring to resynchronize.
+fn resync(ops: &mut Vec<Op>) {
+    ops.extend([
+        Op::BpWrite32(BASE + BTSDIO_OFFSET_BT2HOST_OUT, WRITE_POINTER),
+        Op::BpWrite32(HOST_CTRL_REG_ADDR, BTSDIO_REG_DATA_VALID_BITMASK),
+    ]);
+}
+
+/// Run `handle_irq` once per pass against the scripted bus. Every scripted
+/// operation must be consumed, and no record may reach the host.
+fn run_bt_irq_passes(passes: usize, ops: Vec<Op>) -> u32 {
+    let bus = Rc::new(BusState {
+        ops: RefCell::new(ops.into()),
+        published: Cell::new(0),
+        wlan_reads: Cell::new(0),
+        wlan_writes: Cell::new(0),
+        irq_pending: Cell::new(false),
+        irq_waker: RefCell::new(None),
+        interrupts: Cell::new(0),
+    });
+    let mut bt_state = BtState::new();
+    let (mut bt, host) = new(&mut bt_state);
+    bt.addr = BASE;
+    let mut script = ScriptBus(bus.clone());
+    let mut buf = Aligned([0u8; 64]);
+    for _ in 0..passes {
+        embassy_futures::block_on(bt.handle_irq(&mut script, &mut buf));
+    }
+    core::assert!(bus.ops.borrow().is_empty(), "unconsumed bus operations");
+    core::assert!(host.rx.borrow().is_empty(), "a corrupt record reached the host");
+    bus.published.get()
+}
+
+#[test]
+fn oversized_record_length_resyncs_immediately() {
+    // 0x2000 bytes cannot fit any rx slot, so the header is corrupt.
+    let mut ops = Vec::new();
+    bt_work(&mut ops);
+    first_header(&mut ops, [0x00, 0x20, 0x00, 4]);
+    resync(&mut ops);
+    core::assert_eq!(run_bt_irq_passes(1, ops), WRITE_POINTER);
+}
+
+#[test]
+fn short_record_resyncs_only_when_stuck() {
+    // A 100-byte record with only 48 bytes in the ring might still be
+    // mid-write, so the first pass leaves it; the same state on the next pass
+    // means the ring is stuck behind a corrupt header.
+    let header = [100, 0, 0, 4];
+    let mut ops = Vec::new();
+    bt_work(&mut ops);
+    first_header(&mut ops, header);
+    bt_work(&mut ops);
+    first_header(&mut ops, header);
+    resync(&mut ops);
+    core::assert_eq!(run_bt_irq_passes(2, ops), WRITE_POINTER);
+}
