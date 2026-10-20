@@ -575,10 +575,11 @@ where
     Ok((device, control, runner))
 }
 
-/// Create a new instance of the CYW43 driver.
+/// Create a new instance of the CYW43 driver with Bluetooth.
 ///
-/// Returns a handle to the network device, control handle and a runner for driving the low level
-/// stack.
+/// Returns a handle to the network device, the Bluetooth HCI driver, a control handle and a
+/// runner for driving the low level stack. Fails if the chip, its WLAN firmware, or its
+/// Bluetooth core cannot be brought up, so the caller can carry on without the radio.
 #[cfg(feature = "bluetooth")]
 pub async fn new_with_bluetooth<'a, PWR, SPI>(
     state: &'a mut State,
@@ -587,12 +588,12 @@ pub async fn new_with_bluetooth<'a, PWR, SPI>(
     wifi_firmware: &Aligned<A4, [u8]>,
     bluetooth_firmware: &Aligned<A4, [u8]>,
     nvram: &Aligned<A4, [u8]>,
-) -> (
+) -> Result<(
     NetDriver<'a>,
     bluetooth::BtDriver<'a>,
     Control<'a>,
     Runner<'a, SpiBus<PWR, SPI>, Cyw43439>,
-)
+)>
 where
     PWR: OutputPin,
     SPI: SpiBusCyw43,
@@ -612,10 +613,7 @@ where
         Some(bt_runner),
     );
 
-    runner
-        .init(wifi_firmware, nvram, Some(bluetooth_firmware))
-        .await
-        .unwrap();
+    runner.init(wifi_firmware, nvram, Some(bluetooth_firmware)).await?;
     let control = Control::new(
         state_ch,
         &state.net.events,
@@ -623,7 +621,7 @@ where
         &state.net.secure_network,
     );
 
-    (device, bt_driver, control, runner)
+    Ok((device, bt_driver, control, runner))
 }
 
 /// Include bytes aligned to A4 in the binary

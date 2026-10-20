@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- next-header -->
 ## Unreleased - ReleaseDate
 
+- `new_with_bluetooth` now returns `Result`, like `new`: Bluetooth bring-up failures (firmware never ready, core never awake) are reported instead of panicking.
 - Clear the scan event mask and subscription on cancellation.
 - Keep WiFi responsive when the Bluetooth RX queue is full; resume queued records when space frees.
 - Disassociate before retrying a failed or cancelled join.

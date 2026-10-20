@@ -668,7 +668,8 @@ impl<'a, BUS: Bus, CHIP: Chip> Runner<'a, BUS, CHIP> {
                 .as_mut()
                 .unwrap()
                 .init_bluetooth(&mut self.bus, bt_fw, &mut buf)
-                .await;
+                .await
+                .ctx("bluetooth init failed")?;
         }
 
         debug!("cyw43 runner init done");

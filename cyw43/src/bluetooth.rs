@@ -221,17 +221,30 @@ pub(crate) fn read_firmware_patch_line(p_btfw_cb: &mut CybtFwCb, hfd: &mut HexFi
 }
 
 impl<'a> BtRunner<'a> {
-    pub(crate) async fn init_bluetooth(&mut self, bus: &mut impl Bus, firmware: &[u8], buf: &mut Aligned<A4, [u8]>) {
+    /// Bring up the Bluetooth core. Fails, rather than panicking, if the core
+    /// never reports ready or awake, so the caller can run without Bluetooth.
+    pub(crate) async fn init_bluetooth(
+        &mut self,
+        bus: &mut impl Bus,
+        firmware: &[u8],
+        buf: &mut Aligned<A4, [u8]>,
+    ) -> crate::Result<()> {
         trace!("init_bluetooth");
         bus.bp_write32(CHIP.bluetooth_base_address + BT2WLAN_PWRUP_ADDR, BT2WLAN_PWRUP_WAKE)
             .await;
         Timer::after(Duration::from_millis(2)).await;
         self.upload_bluetooth_firmware(bus, firmware, buf).await;
-        self.wait_bt_ready(bus).await;
-        self.init_bt_buffers(bus).await;
-        assert!(self.wait_bt_awake(bus).await);
+        if !self.wait_bt_ready(bus).await {
+            error!("bluetooth firmware did not report ready");
+            return Err(crate::Error);
+        }
+        self.init_bt_buffers(bus).await?;
+        if !self.wait_bt_awake(bus).await {
+            return Err(crate::Error);
+        }
         self.bt_set_host_ready(bus).await;
         self.bt_toggle_intr(bus).await;
+        Ok(())
     }
 
     pub(crate) async fn upload_bluetooth_firmware(
@@ -315,19 +328,19 @@ impl<'a> BtRunner<'a> {
         }
     }
 
-    pub(crate) async fn wait_bt_ready(&mut self, bus: &mut impl Bus) {
+    /// Wait up to 300 ms for the Bluetooth firmware to report ready. Returns
+    /// `false` on timeout.
+    pub(crate) async fn wait_bt_ready(&mut self, bus: &mut impl Bus) -> bool {
         trace!("wait_bt_ready");
-        let mut success = false;
         for _ in 0..300 {
             let val = bus.bp_read32(BT_CTRL_REG_ADDR).await;
             trace!("BT_CTRL_REG_ADDR = {:08x}", val);
             if val & BTSDIO_REG_FW_RDY_BITMASK != 0 {
-                success = true;
-                break;
+                return true;
             }
             Timer::after(Duration::from_millis(1)).await;
         }
-        assert!(success == true);
+        false
     }
 
     /// Wait up to 300 ms for the Bluetooth core to acknowledge a host wake.
@@ -380,15 +393,19 @@ impl<'a> BtRunner<'a> {
         bus.bp_write32(HOST_CTRL_REG_ADDR, value).await;
     }
 
-    pub(crate) async fn init_bt_buffers(&mut self, bus: &mut impl Bus) {
+    pub(crate) async fn init_bt_buffers(&mut self, bus: &mut impl Bus) -> crate::Result<()> {
         trace!("init_bt_buffers");
         self.addr = bus.bp_read32(WLAN_RAM_BASE_REG_ADDR).await;
-        assert!(self.addr != 0);
+        if self.addr == 0 {
+            error!("bluetooth shared buffer address is zero");
+            return Err(crate::Error);
+        }
         trace!("wlan_ram_base_addr = {:08x}", self.addr);
         bus.bp_write32(self.addr + BTSDIO_OFFSET_HOST2BT_IN, 0).await;
         bus.bp_write32(self.addr + BTSDIO_OFFSET_HOST2BT_OUT, 0).await;
         bus.bp_write32(self.addr + BTSDIO_OFFSET_BT2HOST_IN, 0).await;
         bus.bp_write32(self.addr + BTSDIO_OFFSET_BT2HOST_OUT, 0).await;
+        Ok(())
     }
 
     async fn bt_bus_request(&mut self, bus: &mut impl Bus) -> bool {
