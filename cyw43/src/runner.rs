@@ -1057,7 +1057,12 @@ impl<'a, BUS: Bus, CHIP: Chip> Runner<'a, BUS, CHIP> {
                     mem::transmute(packet.storage_mut())
                 },
                 _ => {
-                    warn!("packet pool empty or buf over size; dropping rxd packet if present.");
+                    // No stack buffer for this frame. Routine on a host that
+                    // runs no network stack (Bluetooth-only use): control
+                    // replies, events and credits are still handled from the
+                    // scratch buffer below. Only a data frame is lost, which
+                    // is reported once the frame is known to be one.
+                    trace!("no rx buffer available; reading frame into scratch buffer");
 
                     &mut *buf
                 }
@@ -1092,18 +1097,20 @@ impl<'a, BUS: Bus, CHIP: Chip> Runner<'a, BUS, CHIP> {
             // Process every drained frame, even when there's no `PacketBuf` to
             // receive it into: credits, ioctl responses, and events must not be
             // dropped just because the rx pool is empty.
-            let reception = self.rx(&mut buf[..len]);
+            let Some(Reception { len: data_len, offset }) = self.rx(&mut buf[..len]) else {
+                continue;
+            };
 
-            if let Some(mut packet) = packet
-                && packet.capacity() >= len.next_multiple_of(4)
-                && let Some(Reception { len, offset }) = reception
-            {
-                packet.reserve(offset);
-                packet.set_len(len);
+            match packet {
+                Some(mut packet) if packet.capacity() >= len.next_multiple_of(4) => {
+                    packet.reserve(offset);
+                    packet.set_len(data_len);
 
-                if self.ch.try_rx(packet).is_err() {
-                    warn!("failed to push rxd packet to the channel.");
+                    if self.ch.try_rx(packet).is_err() {
+                        warn!("failed to push rxd packet to the channel.");
+                    }
                 }
+                _ => warn!("packet pool empty or buf over size; dropping rxd data frame."),
             }
         }
     }

@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- next-header -->
 ## Unreleased - ReleaseDate
 
+- Receiving a control reply or event with no stack RX buffer available no longer logs a warning; only a dropped data frame does.
 - Resynchronize the Bluetooth RX ring on a corrupt record header instead of panicking or stalling.
 - `BtDriver::read` drops packets larger than the caller's buffer instead of panicking.
 - A Bluetooth wake timeout drops the HCI packet instead of panicking.
