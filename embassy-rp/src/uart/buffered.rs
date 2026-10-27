@@ -703,18 +703,20 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for BufferedInterr
             w.set_oeic(ris.oeris());
         });
 
-        // Errors
+        // Errors. Each is also reported to the reader as an `Err` (see `rx_error`
+        // below), so they're only traced here: a link that frames its packets
+        // with breaks raises a break and a framing error for every packet.
         if ris.feris() {
-            warn!("Framing error");
+            trace!("Framing error");
         }
         if ris.peris() {
-            warn!("Parity error");
+            trace!("Parity error");
         }
         if ris.beris() {
-            warn!("Break error");
+            trace!("Break error");
         }
         if ris.oeris() {
-            warn!("Overrun error");
+            trace!("Overrun error");
         }
 
         // RX
